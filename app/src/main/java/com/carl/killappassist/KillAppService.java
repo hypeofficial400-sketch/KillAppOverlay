@@ -15,31 +15,17 @@ import android.view.accessibility.AccessibilityEvent;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.util.List;
-
 public class KillAppService extends AccessibilityService {
-
     private WindowManager windowManager;
     private View overlayView;
     private boolean isOverlayShown = false;
     private String lastForegroundPackage = "";
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private Runnable hideRunnable;
 
-    // Packages that must never be killed
     private static final String[] PROTECTED = {
-        "com.android.systemui",
-        "com.android.launcher",
-        "com.itel.launcher",
-        "com.transsion.hilauncher",
-        "com.carl.killappassist",
-        "com.topjohnwu.magisk"
-    };
-
-    // Known recents/overview packages on XOS / AOSP
-    private static final String[] RECENTS_PACKAGES = {
-        "com.android.systemui",
-        "com.itel.systemui",
-        "com.android.launcher3",
-        "com.transsion.hilauncher"
+        "com.android.systemui","com.android.launcher","com.itel.launcher",
+        "com.transsion.hilauncher","com.carl.killappassist","com.topjohnwu.magisk"
     };
 
     @Override
@@ -51,94 +37,54 @@ public class KillAppService extends AccessibilityService {
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event == null) return;
-
-        String pkg = event.getPackageName() != null
-                ? event.getPackageName().toString() : "";
-
+        String pkg = event.getPackageName() != null ? event.getPackageName().toString() : "";
         int type = event.getEventType();
 
-        if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            if (isRecentsPackage(pkg)) {
-                // Capture foreground app just before recents opened
-                String fg = getForegroundApp();
-                if (fg != null && !fg.isEmpty() && !isProtected(fg)) {
-                    lastForegroundPackage = fg;
-                }
+        if (!pkg.isEmpty() && !isProtected(pkg)) {
+            lastForegroundPackage = pkg;
+        }
+
+        if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+            type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            if (pkg.contains("systemui") || pkg.contains("launcher")) {
+                // Cancel any pending hide
+                if (hideRunnable != null) handler.removeCallbacks(hideRunnable);
                 showKillButton();
             } else {
-                hideKillButton();
-                // Track last real foreground app
-                if (!pkg.isEmpty() && !isRecentsPackage(pkg) && !isProtected(pkg)) {
-                    lastForegroundPackage = pkg;
-                }
+                // Delay hiding by 3 seconds so user can tap it
+                scheduleHide();
             }
         }
     }
 
-    private boolean isRecentsPackage(String pkg) {
-        for (String r : RECENTS_PACKAGES) {
-            if (pkg.equals(r)) return true;
-        }
-        return false;
+    private void scheduleHide() {
+        if (hideRunnable != null) handler.removeCallbacks(hideRunnable);
+        hideRunnable = () -> hideKillButton();
+        handler.postDelayed(hideRunnable, 3000);
     }
 
     private boolean isProtected(String pkg) {
-        for (String p : PROTECTED) {
-            if (pkg.startsWith(p)) return true;
-        }
+        for (String p : PROTECTED) if (pkg.startsWith(p)) return true;
         return false;
     }
 
-    private String getForegroundApp() {
-        try {
-            ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
-            if (am == null) return null;
-
-            List<ActivityManager.RunningAppProcessInfo> procs = am.getRunningAppProcesses();
-            if (procs == null) return null;
-
-            for (ActivityManager.RunningAppProcessInfo p : procs) {
-                if (p.importance ==
-                        ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) {
-                    if (!isProtected(p.processName)) {
-                        return p.processName;
-                    }
-                }
-            }
-        } catch (Exception e) {
-            // ignore
-        }
-        return null;
-    }
-
-    // ─── Overlay UI ────────────────────────────────────────────────────────────
-
     private void showKillButton() {
         if (isOverlayShown) return;
-
-        new Handler(Looper.getMainLooper()).post(() -> {
+        handler.post(() -> {
             try {
                 overlayView = buildButton();
-
                 WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                    PixelFormat.TRANSLUCENT
-                );
-
-                // Bottom-center, sits above nav bar
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                    PixelFormat.TRANSLUCENT);
                 params.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
                 params.y = 240;
-
                 windowManager.addView(overlayView, params);
                 isOverlayShown = true;
-
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
+            } catch (Exception e) { e.printStackTrace(); }
         });
     }
 
@@ -149,110 +95,50 @@ public class KillAppService extends AccessibilityService {
         btn.setTextSize(15f);
         btn.setPadding(56, 28, 56, 28);
         btn.setGravity(Gravity.CENTER);
-
-        // Red pill shape
         GradientDrawable bg = new GradientDrawable();
-        bg.setShape(GradientDrawable.RECTANGLE);
         bg.setColor(Color.parseColor("#CC2222"));
         bg.setCornerRadius(60f);
         bg.setStroke(2, Color.parseColor("#FF4444"));
         btn.setBackground(bg);
-
-        // Tap → kill
         btn.setOnClickListener(v -> {
+            if (hideRunnable != null) handler.removeCallbacks(hideRunnable);
             doKill();
             hideKillButton();
             performGlobalAction(GLOBAL_ACTION_BACK);
         });
-
-        // Long press → cancel / dismiss
         btn.setOnLongClickListener(v -> {
+            if (hideRunnable != null) handler.removeCallbacks(hideRunnable);
             hideKillButton();
             showToast("Cancelled");
             return true;
         });
-
         return btn;
     }
 
     private void doKill() {
         final String target = lastForegroundPackage;
-
-        if (target == null || target.isEmpty()) {
-            showToast("No target app found");
-            return;
-        }
-
-        if (isProtected(target)) {
-            showToast("Cannot kill system app");
-            return;
-        }
-
-        boolean killed = false;
-
-        // Method 1: killBackgroundProcesses (no root needed)
-        try {
-            ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
-            if (am != null) {
-                am.killBackgroundProcesses(target);
-                killed = true;
-            }
-        } catch (Exception e) {
-            // fallthrough
-        }
-
-        // Method 2: am force-stop (works best with root/system privileges)
-        try {
-            Runtime.getRuntime().exec(new String[]{"sh", "-c", "am force-stop " + target});
-            killed = true;
-        } catch (Exception e) {
-            // fallthrough
-        }
-
-        // Method 3: su force-stop (if Magisk root available)
-        try {
-            Runtime.getRuntime().exec(new String[]{"su", "-c", "am force-stop " + target});
-            killed = true;
-        } catch (Exception e) {
-            // ignore
-        }
-
-        if (killed) {
-            // Friendly short name
-            String appName = target.contains(".")
-                ? target.substring(target.lastIndexOf('.') + 1) : target;
-            showToast("Killed: " + appName);
-        } else {
-            showToast("Kill failed — try enabling root");
-        }
+        if (target == null || target.isEmpty()) { showToast("No target app found"); return; }
+        if (isProtected(target)) { showToast("Cannot kill system app"); return; }
+        try { ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+              if (am != null) am.killBackgroundProcesses(target); } catch (Exception e) {}
+        try { Runtime.getRuntime().exec(new String[]{"sh","-c","am force-stop "+target}); } catch (Exception e) {}
+        try { Runtime.getRuntime().exec(new String[]{"su","-c","am force-stop "+target}); } catch (Exception e) {}
+        String name = target.contains(".") ? target.substring(target.lastIndexOf('.')+1) : target;
+        showToast("Killed: " + name);
     }
 
     private void hideKillButton() {
         if (!isOverlayShown || overlayView == null) return;
-
-        new Handler(Looper.getMainLooper()).post(() -> {
-            try {
-                windowManager.removeView(overlayView);
-            } catch (Exception ignored) {}
-            overlayView = null;
-            isOverlayShown = false;
+        handler.post(() -> {
+            try { windowManager.removeView(overlayView); } catch (Exception ignored) {}
+            overlayView = null; isOverlayShown = false;
         });
     }
 
     private void showToast(String msg) {
-        new Handler(Looper.getMainLooper()).post(() ->
-            Toast.makeText(KillAppService.this, msg, Toast.LENGTH_SHORT).show()
-        );
+        handler.post(() -> Toast.makeText(KillAppService.this, msg, Toast.LENGTH_SHORT).show());
     }
 
-    @Override
-    public void onInterrupt() {
-        hideKillButton();
-    }
-
-    @Override
-    public void onDestroy() {
-        hideKillButton();
-        super.onDestroy();
-    }
+    @Override public void onInterrupt() { hideKillButton(); }
+    @Override public void onDestroy() { hideKillButton(); super.onDestroy(); }
 }
