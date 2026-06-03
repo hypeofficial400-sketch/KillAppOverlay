@@ -25,7 +25,14 @@ public class KillAppService extends AccessibilityService {
 
     private static final String[] PROTECTED = {
         "com.android.systemui","com.android.launcher","com.itel.launcher",
-        "com.transsion.hilauncher","com.carl.killappassist","com.topjohnwu.magisk"
+        "com.transsion.XOSLauncher","com.transsion.hilauncher",
+        "com.carl.killappassist","com.topjohnwu.magisk"
+    };
+
+    private static final String[] RECENTS_PKGS = {
+        "com.transsion.XOSLauncher",
+        "com.android.systemui",
+        "com.transsion.hilauncher"
     };
 
     @Override
@@ -44,28 +51,30 @@ public class KillAppService extends AccessibilityService {
             lastForegroundPackage = pkg;
         }
 
-        if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
-            type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
-            if (pkg.contains("systemui") || pkg.contains("launcher")) {
-                // Cancel any pending hide
+        if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            if (isRecentsPkg(pkg)) {
                 if (hideRunnable != null) handler.removeCallbacks(hideRunnable);
                 showKillButton();
             } else {
-                // Delay hiding by 3 seconds so user can tap it
-                scheduleHide();
+                scheduleHide(1500);
             }
         }
     }
 
-    private void scheduleHide() {
-        if (hideRunnable != null) handler.removeCallbacks(hideRunnable);
-        hideRunnable = () -> hideKillButton();
-        handler.postDelayed(hideRunnable, 3000);
+    private boolean isRecentsPkg(String pkg) {
+        for (String r : RECENTS_PKGS) if (pkg.equals(r)) return true;
+        return false;
     }
 
     private boolean isProtected(String pkg) {
         for (String p : PROTECTED) if (pkg.startsWith(p)) return true;
         return false;
+    }
+
+    private void scheduleHide(long delay) {
+        if (hideRunnable != null) handler.removeCallbacks(hideRunnable);
+        hideRunnable = this::hideKillButton;
+        handler.postDelayed(hideRunnable, delay);
     }
 
     private void showKillButton() {
